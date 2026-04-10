@@ -1,0 +1,143 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'   # Every Monday at 06:00 UTC
+
+permissions:
+  contents: write   # required to create GitHub Releases
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Step 1: Note what triggered this run ──────────────────────────────
+      - name: Set trigger type
+        id: trigger
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "is_scheduled=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "is_scheduled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Step 2: Fetch the latest bogdanfinn/tls-client release tag ────────
+      - name: Get latest tls-client version
+        id: tls_version
+        run: |
+          VERSION=$(curl -sf \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/bogdanfinn/tls-client/releases/latest \
+            | jq -r '.tag_name')
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::Could not fetch tls-client release version"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Latest tls-client: $VERSION"
+
+      # ── Step 3: Scheduled runs only — skip if tls-client hasn't changed ───
+      #    The release body of the last release of *this* repo contains the
+      #    line "tls-client: <version>", written by step 7 below.
+      - name: Check if tls-client version changed (scheduled only)
+        id: version_check
+        if: steps.trigger.outputs.is_scheduled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT="${{ steps.tls_version.outputs.version }}"
+
+          # Fetch the body of the most-recent release of this repo.
+          # On the very first run there are no releases yet — the || echo ""
+          # fallback yields an empty string, which differs from CURRENT,
+          # so the build proceeds correctly.
+          LAST_BODY=$(gh release view \
+            --repo "${{ github.repository }}" \
+            --json body --jq '.body' 2>/dev/null || echo "")
+
+          LAST=$(echo "$LAST_BODY" | grep '^tls-client:' | awk '{print $2}' || echo "")
+
+          echo "Last built with : $LAST"
+          echo "Current latest  : $CURRENT"
+
+          if [ "$LAST" = "$CURRENT" ]; then
+            echo "tls-client unchanged — skipping build."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Step 4: Gate — decide whether to proceed ─────────────────────────
+      - name: Determine whether to build
+        id: gate
+        run: |
+          SKIP="${{ steps.version_check.outputs.skip }}"
+          # For push events, version_check is skipped entirely so SKIP is "".
+          # Treat "" as "do not skip".
+          if [ "$SKIP" = "true" ]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true"  >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Step 5: Compute a unique release tag ─────────────────────────────
+      #    Primary format: vYYYY.MM.DD
+      #    Collision suffix: vYYYY.MM.DD-2, -3, … (multiple builds per day)
+      - name: Compute release tag
+        id: tag
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BASE="v$(date -u +%Y.%m.%d)"
+          TAG="$BASE"
+          N=2
+          while gh release view "$TAG" \
+              --repo "${{ github.repository }}" > /dev/null 2>&1; do
+            TAG="${BASE}-${N}"
+            N=$((N + 1))
+          done
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
+      # ── Step 6: Set up Go ─────────────────────────────────────────────────
+      - name: Set up Go
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false   # go.sum may not be committed on first run
+
+      # ── Step 7: Download / tidy dependencies ─────────────────────────────
+      - name: Tidy dependencies
+        if: steps.gate.outputs.proceed == 'true'
+        run: go mod tidy
+
+      # ── Step 8: Cross-compile for Windows amd64 ──────────────────────────
+      - name: Build Windows binary
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: go build -ldflags="-s -w" -o curl-impersonate-win.exe .
+
+      # ── Step 9: Create the GitHub Release and upload the binary ──────────
+      #    The release body contains "tls-client: <version>" so that the next
+      #    scheduled run can detect whether an upstream update occurred.
+      - name: Create release and upload binary
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ steps.tag.outputs.tag }}" \
+            --notes "tls-client: ${{ steps.tls_version.outputs.version }}" \
+            curl-impersonate-win.exe
