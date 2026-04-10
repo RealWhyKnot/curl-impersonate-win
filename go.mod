@@ -1,4 +1,4 @@
-module github.com/WhyKnot/curl-impersonate-win
+module github.com/RealWhyKnot/curl-impersonate-win
 
 go 1.22
 
