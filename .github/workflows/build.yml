@@ -7,7 +7,9 @@ on:
     - cron: '0 6 * * 1'   # Every Monday at 06:00 UTC
 
 permissions:
-  contents: write   # required to create GitHub Releases
+  contents: write     # required to create GitHub Releases
+  id-token: write     # required by attest-build-provenance for SLSA attestation
+  attestations: write # required by attest-build-provenance to upload the attestation
 
 jobs:
   build-and-release:
@@ -128,16 +130,51 @@ jobs:
           CGO_ENABLED: '0'
         run: go build -ldflags="-s -w" -o curl-impersonate-win.exe .
 
-      # ── Step 9: Create the GitHub Release and upload the binary ──────────
-      #    The release body contains "tls-client: <version>" so that the next
-      #    scheduled run can detect whether an upstream update occurred.
-      - name: Create release and upload binary
+      # ── Step 9: Compute SHA256 sidecar ───────────────────────────────────
+      #    Consumers (e.g. WKVRCProxy's build.ps1) verify the .exe against
+      #    this file before installing. Format matches `sha256sum` so the
+      #    standard tools work: "<hex>  curl-impersonate-win.exe".
+      - name: Compute SHA256
+        if: steps.gate.outputs.proceed == 'true'
+        id: sha
+        run: |
+          sha256sum curl-impersonate-win.exe | tee curl-impersonate-win.exe.sha256
+          HASH=$(awk '{print $1}' curl-impersonate-win.exe.sha256)
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+
+      # ── Step 10: SLSA build provenance attestation ───────────────────────
+      #    Free, signed by Sigstore via GitHub's OIDC identity. Verifiable
+      #    by anyone with `gh attestation verify <file> --owner RealWhyKnot`.
+      - name: Attest build provenance
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: curl-impersonate-win.exe
+
+      # ── Step 11: Create the GitHub Release and upload binary + sidecar ───
+      #    Release body carries:
+      #      - tls-client: <version>     (skip-when-current logic)
+      #      - sha256: <hex>             (machine-readable, consumers can grep)
+      - name: Create release and upload assets
         if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          NOTES=$(cat <<NOTES_END
+          tls-client: ${{ steps.tls_version.outputs.version }}
+          sha256: ${{ steps.sha.outputs.hash }}
+
+          ## Verifying this release
+
+          \`\`\`
+          sha256sum -c curl-impersonate-win.exe.sha256
+          gh attestation verify curl-impersonate-win.exe --owner ${{ github.repository_owner }}
+          \`\`\`
+          NOTES_END
+          )
           gh release create "${{ steps.tag.outputs.tag }}" \
             --repo "${{ github.repository }}" \
             --title "${{ steps.tag.outputs.tag }}" \
-            --notes "tls-client: ${{ steps.tls_version.outputs.version }}" \
-            curl-impersonate-win.exe
+            --notes "$NOTES" \
+            curl-impersonate-win.exe \
+            curl-impersonate-win.exe.sha256
