@@ -111,7 +111,7 @@ jobs:
       # ── Step 6: Set up Go ─────────────────────────────────────────────────
       - name: Set up Go
         if: steps.gate.outputs.proceed == 'true'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.22'
           cache: false   # go.sum may not be committed on first run
