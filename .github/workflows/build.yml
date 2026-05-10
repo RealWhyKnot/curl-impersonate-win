@@ -147,7 +147,7 @@ jobs:
       #    by anyone with `gh attestation verify <file> --owner RealWhyKnot`.
       - name: Attest build provenance
         if: steps.gate.outputs.proceed == 'true'
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: curl-impersonate-win.exe
 
