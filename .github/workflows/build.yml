@@ -131,8 +131,8 @@ jobs:
         run: go build -ldflags="-s -w" -o curl-impersonate-win.exe .
 
       # ── Step 9: Compute SHA256 sidecar ───────────────────────────────────
-      #    Consumers (e.g. WKVRCProxy's build.ps1) verify the .exe against
-      #    this file before installing. Format matches `sha256sum` so the
+      #    Consumers can verify the .exe against this file before installing.
+      #    Format matches `sha256sum` so the
       #    standard tools work: "<hex>  curl-impersonate-win.exe".
       - name: Compute SHA256
         if: steps.gate.outputs.proceed == 'true'

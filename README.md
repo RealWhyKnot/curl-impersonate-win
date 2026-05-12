@@ -124,10 +124,10 @@ suitable for large (multi-GB) transfers.
 
 ---
 
-## WKVRCProxy integration
+## Subprocess integration
 
 `curl-impersonate-win` is designed to be called as a subprocess by C# applications
-that need browser-like TLS fingerprints. The canonical consumer is **WKVRCProxy**.
+that need browser-like TLS fingerprints.
 
 ### Spawning the process (C#)
 
